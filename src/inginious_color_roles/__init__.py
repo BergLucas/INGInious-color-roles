@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from html import escape
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable
 
-from docutils.nodes import Node, raw
+from docutils.nodes import Node, inline, system_message
 from docutils.parsers.rst import roles
+from flask import Response
+from inginious.frontend.pages.utils import INGIniousPage
 
 if TYPE_CHECKING:
     from docutils.parsers.rst.states import Inliner
@@ -15,11 +17,35 @@ if TYPE_CHECKING:
 __version__ = "0.1.0"
 
 
-def create_color_role(color: str) -> Callable:
-    """Create a reStructuredText role that colors text.
+class ColorsGenerator(INGIniousPage):
+    """Serve color roles for reStructuredText."""
+
+    def __init__(self, colors: dict[str, str | None]) -> None:
+        """Initialize the color roles generator."""
+        self.colors = colors
+
+    def GET(self) -> Response:  # noqa: N802
+        """Serve color roles for reStructuredText.
+
+        Returns:
+            The color roles.
+        """
+        return Response(
+            response="\n".join(
+                f".{name} {{color: {color}}}"
+                for name, color in self.colors.items()
+                if color is not None
+            ),
+            status=200,
+            mimetype="text/css",
+        )
+
+
+def create_role(role_name: str) -> Callable:
+    """Create a reStructuredText role.
 
     Args:
-        color: The color to apply to the text.
+        role_name: The name of the role.
 
     Returns:
         A callable that implements the role.
@@ -33,14 +59,19 @@ def create_color_role(color: str) -> Callable:
         inliner: Inliner,
         options: dict[str, Any] | None = None,
         content: list[str] | None = None,
-    ) -> tuple[list[Node], list[Node]]:
-        return [
-            raw(
-                "",
-                f'<span style="color:{escape(color)}">{escape(text)}</span>',
-                format="html",
-            )
-        ], []
+    ) -> tuple[list[Node], list[system_message]]:
+        parsed_nodes, messages = inliner.parse(
+            text,
+            lineno,
+            SimpleNamespace(
+                reporter=inliner.reporter,
+                document=inliner.document,
+                language=inliner.language,
+            ),
+            inliner.parent,
+        )
+
+        return [inline("", "", *parsed_nodes, classes=[role_name])], messages
 
     return role
 
@@ -59,7 +90,16 @@ def init(
         client: The client instance.
         plugin_config: The plugin configuration dictionary.
     """
-    colors: dict[str, str] = plugin_config.get("colors", {})
+    colors: dict[str, str | None] = plugin_config.get("colors", {})
 
-    for role_name, color in colors.items():
-        roles.register_local_role(role_name, create_color_role(color))
+    for role_name in colors:
+        roles.register_local_role(role_name, create_role(role_name))
+
+    plugin_manager.add_page(
+        "/plugins/color_roles/generated/css/colors.css",
+        ColorsGenerator.as_view("color_roles_generated", colors=colors),
+    )
+    plugin_manager.add_hook(
+        "css",
+        lambda: "/plugins/color_roles/generated/css/colors.css",
+    )
